@@ -1,187 +1,136 @@
 import streamlit as st
 import pdfplumber
-import pypdf
 import re
 import io
-import pytesseract
-from pdf2image import convert_from_bytes
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from io import BytesIO
 
-# --- CORE LOGIC CLASS ---
 class PDFQuizReformatter:
     def __init__(self, input_file):
         self.file_bytes = input_file.getvalue()
-        self.questions = {}     
-        self.answers = {}       
-        self.explanations = {}  
-        self.debug_text = ""    
+        self.questions = {}
+        self.answers = {}
+        self.explanations = {}
+        self.debug_text = ""
         
-    def process(self):
-        full_text = []
-        tables = []
-        used_method = "None"
+    def _extract_text_smart(self, page):
+        """
+        Splits page into Left/Right columns to prevent merging text.
+        Returns combined text: Left Column \n Right Column
+        """
+        width = page.width
+        height = page.height
         
-        # --- METHOD 1: PDFPLUMBER (Fastest) ---
+        # 1. Define Crop Boxes (Left Half / Right Half)
+        # We assume a small margin in the center (45% to 55%) to avoid cutting words
+        left_bbox = (0, 0, width * 0.55, height)
+        right_bbox = (width * 0.45, 0, width, height)
+        
         try:
-            with pdfplumber.open(io.BytesIO(self.file_bytes)) as pdf:
-                for page in pdf.pages:
-                    text = page.extract_text()
-                    if text: full_text.append(text)
-                    page_tables = page.extract_tables()
-                    if page_tables: tables.extend(page_tables)
-            if full_text: used_method = "PDFPlumber"
-        except: pass
-
-        combined_text = "\n".join(full_text)
-
-        # --- METHOD 2: PYPDF (Backup) ---
-        if not combined_text.strip():
-            full_text = []
-            try:
-                reader = pypdf.PdfReader(io.BytesIO(self.file_bytes))
-                for page in reader.pages:
-                    text = page.extract_text()
-                    if text: full_text.append(text)
-                combined_text = "\n".join(full_text)
-                if combined_text.strip(): used_method = "PyPDF"
-            except: pass
-
-        # --- METHOD 3: ITERATIVE OCR (The "Unlimited" Fix) ---
-        if not combined_text.strip():
-            st.warning("⚠️ Text is invisible. Activating Smart OCR (Page-by-Page)...")
+            # Crop and extract left
+            left_crop = page.crop(left_bbox)
+            left_text = left_crop.extract_text(layout=False) or ""
             
-            try:
-                # 1. Get total page count first
-                reader_check = pypdf.PdfReader(io.BytesIO(self.file_bytes))
-                total_pages = len(reader_check.pages)
-                
-                full_text = []
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                
-                # 2. Process ONE page at a time to save RAM
-                for i in range(total_pages):
-                    status_text.text(f"Scanning page {i+1} of {total_pages}...")
-                    
-                    # Convert only the specific page
-                    # fmt='jpeg' reduces memory usage compared to default ppm
-                    images = convert_from_bytes(
-                        self.file_bytes, 
-                        first_page=i+1, 
-                        last_page=i+1,
-                        fmt='jpeg' 
-                    )
-                    
-                    if images:
-                        page_text = pytesseract.image_to_string(images[0])
-                        full_text.append(page_text)
-                    
-                    # Update progress
-                    progress_bar.progress((i + 1) / total_pages)
-                
-                combined_text = "\n".join(full_text)
-                used_method = "OCR (Iterative)"
-                
-            except Exception as e:
-                return f"OCR_FAILED: {e}"
+            # Crop and extract right
+            right_crop = page.crop(right_bbox)
+            right_text = right_crop.extract_text(layout=False) or ""
+            
+            return left_text + "\n" + right_text
+        except Exception:
+            # Fallback if cropping fails (e.g. weird page size)
+            return page.extract_text() or ""
 
-        # Debug & Check
-        self.debug_text = f"Method Used: {used_method}\n\n" + combined_text[:1000] 
+    def process(self):
+        full_text_list = []
+        tables = []
+        
+        # --- 1. READ WITH COLUMN AWARENESS ---
+        with pdfplumber.open(io.BytesIO(self.file_bytes)) as pdf:
+            for page in pdf.pages:
+                # Extract text using the "Split Columns" strategy
+                text = self._extract_text_smart(page)
+                
+                # CLEANING: Remove headers/footers commonly found in UPSC PDFs
+                lines = text.split('\n')
+                cleaned_lines = []
+                for line in lines:
+                    # Filter junk lines
+                    if len(line) < 4 and not line[0].isdigit(): continue
+                    if "ForumIAS" in line or "Page" in line or "PYQ Workbook" in line: continue
+                    if "Vivek Singh" in line or "ECO-550" in line: continue
+                    cleaned_lines.append(line)
+                
+                full_text_list.append("\n".join(cleaned_lines))
+                
+                # Extract Tables (for Grid Answer Keys)
+                tables.extend(page.extract_tables())
+
+        combined_text = "\n".join(full_text_list)
+        self.debug_text = combined_text[:2000] # Save for user to see
+
         if not combined_text.strip():
             return "EMPTY_TEXT_ERROR"
 
-        # --- SMART PATTERN DETECTION ---
-        patterns = [
-            re.compile(r'^\s*(\d+)\.\s+(.*)', re.DOTALL | re.MULTILINE),
-            re.compile(r'^\s*(\d+)\)\s+(.*)', re.DOTALL | re.MULTILINE),
-            re.compile(r'^\s*Q\.?\s*(\d+)[\.:]?\s+(.*)', re.DOTALL | re.MULTILINE),
-            re.compile(r'^\s*(\d+)\s+(.*)', re.DOTALL | re.MULTILINE),
-        ]
+        # --- 2. FIND ALL QUESTIONS (REGEX BLOCK) ---
+        # Instead of line-by-line, we search the whole blob for "Number. " pattern
+        # This handles multi-line questions perfectly.
         
-        best_count = 0
-        best_pattern = None
+        # Regex: Look for newline + number + dot/bracket + space
+        # e.g. "\n1. " or "\n25. " or "\nQ1. "
+        split_pattern = re.compile(r'\n\s*(?:Q\.?)?(\d+)[\.\)]\s+')
         
-        for p in patterns:
-            count = len(p.findall(combined_text))
-            if count > best_count:
-                best_count = count
-                best_pattern = p
+        # Split text by this pattern. 
+        # Result: [Junk, "1", "Question Text...", "2", "Question Text..."]
+        segments = split_pattern.split('\n' + combined_text)
         
-        if best_count == 0:
+        if len(segments) < 2:
             return "NO_QUESTIONS_MATCHED"
-            
-        self._parse_content(combined_text, tables, best_pattern)
-        return "SUCCESS"
 
-    def _parse_content(self, text, tables, q_pattern):
-        lines = text.split('\n')
-        current_q_id = None
-        buffer_text = []
-        mode = "SCANNING"
-        
-        sol_pattern = re.compile(r'^\s*(?:Solution|Ans|Exp|Correct Option).*?[:\s-]\s*\(?([a-d])\)?', re.IGNORECASE)
-        numbered_sol_pattern = re.compile(r'^\s*(\d+)\.\s*(?:Solution|Ans|Exp).*?[:\s-]\s*\(?([a-d])\)?', re.IGNORECASE)
-
-        for line in lines:
-            line = line.strip()
-            if not line: continue
-            
-            q_match = q_pattern.match(line)
-            sol_match = sol_pattern.match(line)
-            num_sol_match = numbered_sol_pattern.match(line)
-
-            if "ANSWER SHEET" in line.upper() or "ANSWER KEY" in line.upper() or "EXPLANATORY NOTES" in line.upper():
-                mode = "ANSWERS_SECTION"
-
-            if num_sol_match:
-                q_id = int(num_sol_match.group(1))
-                self.answers[q_id] = num_sol_match.group(2).upper()
-                self.explanations[q_id] = line
-                current_q_id = q_id
-                mode = "IN_EXPLANATION"
-
-            elif sol_match and current_q_id:
-                self.answers[current_q_id] = sol_match.group(1).upper()
-                self.explanations[current_q_id] = line
-                mode = "IN_EXPLANATION"
-
-            elif q_match and mode != "IN_EXPLANATION":
-                if current_q_id and mode == "IN_QUESTION":
-                    self.questions[current_q_id] = " ".join(buffer_text)
-                current_q_id = int(q_match.group(1))
-                buffer_text = [q_match.group(2)]
-                mode = "IN_QUESTION"
+        # --- 3. PARSE SEGMENTS ---
+        # Segments[0] is intro text. Then Segments[1]=ID, Segments[2]=Text, Segments[3]=ID...
+        for i in range(1, len(segments), 2):
+            try:
+                q_id = int(segments[i])
+                content = segments[i+1].strip()
                 
-            elif mode == "IN_QUESTION":
-                if "Page" in line or "ForumIAS" in line or "www." in line: continue
-                buffer_text.append(line)
+                # SEPARATE QUESTION FROM SOLUTION (if inline)
+                # Look for "Solution: (a)" or "Ans. (b)" inside the content
+                sol_match = re.search(r'(?:\n|\s)(?:Solution|Ans|Exp|Correct Option|Answer).*?[:\s-]\s*\(?([a-d])\)?', content, re.IGNORECASE)
                 
-            elif mode == "IN_EXPLANATION":
-                if q_match: 
-                    if current_q_id and mode == "IN_QUESTION":
-                         self.questions[current_q_id] = " ".join(buffer_text)
-                    current_q_id = int(q_match.group(1))
-                    buffer_text = [q_match.group(2)]
-                    mode = "IN_QUESTION"
+                if sol_match:
+                    # We found a solution INSIDE this block
+                    ans_char = sol_match.group(1).upper()
+                    
+                    # Split Question Text and Explanation Text
+                    split_idx = sol_match.start()
+                    q_text = content[:split_idx].strip()
+                    exp_text = content[split_idx:].strip()
+                    
+                    self.questions[q_id] = q_text
+                    self.answers[q_id] = ans_char
+                    self.explanations[q_id] = exp_text
                 else:
-                    self.explanations[current_q_id] += " " + line
+                    # No inline solution, just a question (Answer might be in grid table later)
+                    self.questions[q_id] = content
+            except ValueError:
+                continue
 
-        if current_q_id and mode == "IN_QUESTION":
-            self.questions[current_q_id] = " ".join(buffer_text)
-
+        # --- 4. PARSE GRID TABLES (For Economy PDF) ---
         for table in tables:
             for row in table:
-                flat_row = [str(x).strip() if x else "" for x in row]
+                flat_row = [str(x).strip().upper() if x else "" for x in row]
                 for i in range(0, len(flat_row) - 1):
-                    if flat_row[i].isdigit() and flat_row[i+1].upper() in ['A','B','C','D']:
-                        try:
-                            q_id = int(flat_row[i])
-                            self.answers[q_id] = flat_row[i+1].upper()
-                        except ValueError: continue
+                    # Check for "51" -> "A"
+                    if flat_row[i].isdigit() and flat_row[i+1] in ['A','B','C','D']:
+                        q_id = int(flat_row[i])
+                        # Only overwrite if we didn't find an inline answer already
+                        if q_id not in self.answers:
+                            self.answers[q_id] = flat_row[i+1]
+        
+        return "SUCCESS"
 
     def generate_pdf_bytes(self):
         output_buffer = BytesIO()
@@ -196,21 +145,27 @@ class PDFQuizReformatter:
         sorted_ids = sorted(self.questions.keys())
         
         if not sorted_ids:
-            story.append(Paragraph(f"<b>No questions found.</b><br/>Debug Info:<br/>{self.debug_text}", styles['Normal']))
+            story.append(Paragraph("<b>No questions found.</b>", styles['Normal']))
             
         for q_id in sorted_ids:
+            # Question
             q_text = f"<b>Q{q_id}.</b> {self.questions[q_id]}"
             story.append(Paragraph(q_text, style_q))
             
+            # Answer
             if q_id in self.answers:
                 ans_text = f"<b>Answer: ({self.answers[q_id]})</b>"
                 story.append(Paragraph(ans_text, style_ans))
             else:
-                story.append(Paragraph("<b>Answer:</b> Not Found", style_ans))
+                story.append(Paragraph("<b>Answer:</b> Not Found (Check end of PDF for key)", style_ans))
 
+            # Explanation
             if q_id in self.explanations:
-                exp_clean = self.explanations[q_id].replace(f"{q_id}.", "", 1).strip()
-                exp_text = f"<b>Explanation:</b> {exp_clean}"
+                # Clean up "Solution: (a)" from start of explanation to look nice
+                raw_exp = self.explanations[q_id]
+                clean_exp = re.sub(r'^(?:Solution|Ans|Exp).*?[:\s-]\s*\(?[a-d]\)?', '', raw_exp, flags=re.IGNORECASE).strip()
+                
+                exp_text = f"<b>Explanation:</b> {clean_exp}"
                 story.append(Paragraph(exp_text, style_exp))
             else:
                 story.append(Spacer(1, 10))
@@ -223,14 +178,17 @@ class PDFQuizReformatter:
 
 # --- UI ---
 st.set_page_config(page_title="PDF Quiz Reformatter", page_icon="📝")
-st.title("📝 PDF Quiz Reformatter")
-st.markdown("Upload a PDF. I will stack Questions, Answers, and Explanations together.")
+st.title("📝 PDF Quiz Reformatter (Robust Mode)")
+st.markdown("""
+**New Feature:** Two-Column Support.  
+If your PDF has two columns (like ForumIAS), I will now read it correctly.
+""")
 
 uploaded_file = st.file_uploader("Upload PDF", type="pdf")
 
 if uploaded_file is not None:
     if st.button("Process PDF"):
-        with st.spinner("Processing..."):
+        with st.spinner("Processing (Splitting Columns)..."):
             try:
                 processor = PDFQuizReformatter(uploaded_file)
                 status = processor.process()
@@ -239,14 +197,15 @@ if uploaded_file is not None:
                     st.success(f"Success! Found {len(processor.questions)} questions.")
                     pdf_bytes = processor.generate_pdf_bytes()
                     st.download_button(label="📥 Download Result", data=pdf_bytes, file_name="reformatted_quiz.pdf", mime="application/pdf")
-                    
-                elif "OCR_FAILED" in status:
-                    st.error(f"⚠️ OCR Failed: {status}")
-                    
+                
                 elif status == "NO_QUESTIONS_MATCHED":
-                    st.error("⚠️ Error: 0 Questions found.")
-                    with st.expander("Debug View"):
+                    st.error("⚠️ Found 0 questions.")
+                    st.warning("Check the Debug View below. If text looks garbled, the PDF might be encrypted.")
+                    with st.expander("Debug Text View"):
                         st.text(processor.debug_text)
                         
+                elif status == "EMPTY_TEXT_ERROR":
+                    st.error("⚠️ PDF is empty or scanned images.")
+                    
             except Exception as e:
                 st.error(f"An error occurred: {e}")
