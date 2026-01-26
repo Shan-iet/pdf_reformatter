@@ -1,7 +1,2 @@
 streamlit
-pdfplumber
 reportlab
-pypdf
-pytesseract
-pdf2image
-pillow
