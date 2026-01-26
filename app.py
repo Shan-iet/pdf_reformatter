@@ -2,6 +2,7 @@ import streamlit as st
 import pdfplumber
 import pypdf
 import re
+import io  # <--- Added this
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
@@ -11,7 +12,10 @@ from io import BytesIO
 # --- CORE LOGIC CLASS ---
 class PDFQuizReformatter:
     def __init__(self, input_file):
-        self.input_file = input_file
+        # We read the bytes ONCE and store them.
+        # This prevents "file closed" errors when switching libraries.
+        self.file_bytes = input_file.getvalue()
+        
         self.questions = {}     
         self.answers = {}       
         self.explanations = {}  
@@ -23,27 +27,28 @@ class PDFQuizReformatter:
         
         # --- ATTEMPT 1: PDFPLUMBER (Best for Tables) ---
         try:
-            with pdfplumber.open(self.input_file) as pdf:
+            # Create a fresh stream for pdfplumber
+            with pdfplumber.open(io.BytesIO(self.file_bytes)) as pdf:
                 for page in pdf.pages:
                     text = page.extract_text()
                     if text: full_text.append(text)
                     
-                    # Extract tables (Only pdfplumber can do this well)
                     page_tables = page.extract_tables()
                     if page_tables: tables.extend(page_tables)
         except Exception as e:
-            st.warning(f"Primary reader failed: {e}. Trying backup...")
+            print(f"Primary reader error: {e}")
 
         combined_text = "\n".join(full_text)
 
         # --- ATTEMPT 2: PYPDF (Backup for weird fonts) ---
+        # If pdfplumber failed to get text, we try pypdf with a FRESH stream
         if not combined_text.strip():
-            st.info("⚠️ Primary reader found no text. Switching to Backup Engine (pypdf)...")
+            st.warning("⚠️ Primary reader found no text. Switching to Backup Engine (pypdf)...")
             full_text = []
             try:
-                # IMPORTANT: Reset file cursor to start
-                self.input_file.seek(0)
-                reader = pypdf.PdfReader(self.input_file)
+                # Create a NEW fresh stream for pypdf
+                backup_stream = io.BytesIO(self.file_bytes)
+                reader = pypdf.PdfReader(backup_stream)
                 for page in reader.pages:
                     text = page.extract_text()
                     if text: full_text.append(text)
@@ -51,7 +56,6 @@ class PDFQuizReformatter:
             except Exception as e:
                 return f"BACKUP_FAILED: {e}"
 
-        # Save for debug
         self.debug_text = combined_text[:1000] 
         
         if not combined_text.strip():
@@ -59,19 +63,21 @@ class PDFQuizReformatter:
 
         # --- SMART PATTERN DETECTION ---
         patterns = [
-            # Pattern A: "1. Question..."
+            # Pattern A: "1. Question..." (Most common)
             re.compile(r'^\s*(\d+)\.\s+(.*)', re.DOTALL | re.MULTILINE),
             # Pattern B: "1) Question..."
             re.compile(r'^\s*(\d+)\)\s+(.*)', re.DOTALL | re.MULTILINE),
             # Pattern C: "Q.1 Question..."
             re.compile(r'^\s*Q\.?\s*(\d+)[\.:]?\s+(.*)', re.DOTALL | re.MULTILINE),
+             # Pattern D: Simple Number start "1 " (Risky but catches loose formats)
+            re.compile(r'^\s*(\d+)\s+(.*)', re.DOTALL | re.MULTILINE),
         ]
         
         best_count = 0
         best_pattern = None
         
         for p in patterns:
-            # FIX: Use p.findall directly without flags
+            # Use p.findall directly without flags
             count = len(p.findall(combined_text))
             if count > best_count:
                 best_count = count
@@ -89,7 +95,9 @@ class PDFQuizReformatter:
         buffer_text = []
         mode = "SCANNING"
         
+        # Regex to find solutions like "Solution: (a)" or "Ans. (b)"
         sol_pattern = re.compile(r'^\s*(?:Solution|Ans|Exp|Correct Option).*?[:\s-]\s*\(?([a-d])\)?', re.IGNORECASE)
+        # Regex for numbered solutions "8. Solution: (c)"
         numbered_sol_pattern = re.compile(r'^\s*(\d+)\.\s*(?:Solution|Ans|Exp).*?[:\s-]\s*\(?([a-d])\)?', re.IGNORECASE)
 
         for line in lines:
@@ -100,6 +108,7 @@ class PDFQuizReformatter:
             sol_match = sol_pattern.match(line)
             num_sol_match = numbered_sol_pattern.match(line)
 
+            # Detect Answer Key Sections
             if "ANSWER SHEET" in line.upper() or "ANSWER KEY" in line.upper() or "EXPLANATORY NOTES" in line.upper():
                 mode = "ANSWERS_SECTION"
 
@@ -204,6 +213,7 @@ if uploaded_file is not None:
     if st.button("Process PDF"):
         with st.spinner("Processing..."):
             try:
+                # Pass the file directly
                 processor = PDFQuizReformatter(uploaded_file)
                 status = processor.process()
                 
