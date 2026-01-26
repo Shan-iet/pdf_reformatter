@@ -18,25 +18,19 @@ def format_question_text(text):
     """
     if not text: return ""
     
-    # Regex to find "1. ", "2. " inside the text, but only if they follow a newline or space
-    # We replace them with <br/>1. to force a line break in ReportLab
     # Pattern: Look for space + digit + dot + space + capital letter
+    # We replace them with <br/> to force a line break in ReportLab
     pattern = r'(\s)(\d+\.\s+[A-Z])'
-    
-    # Replace with <br/> + the match
     formatted_text = re.sub(pattern, r'<br/>\2', text)
-    
     return formatted_text
 
 def smart_break_paragraphs(text, max_chars=350, user_break_keys=None):
     """
-    Breaks text into paragraphs based on:
-    1. Forced breaks before specific phrases (Default + User Custom).
-    2. Length limits (max_chars) splitting at sentence boundaries.
+    Breaks text into paragraphs based on forced breaks and length limits.
     """
     if not text: return []
     
-    # --- A. Define Forced Break Patterns ---
+    # --- Forced Break Patterns ---
     default_breaks = [
         r'Pair [IVX\d]+ is (?:in)?correct:?',      
         r'Statement [IVX\d]+ is (?:in)?correct:?', 
@@ -54,7 +48,7 @@ def smart_break_paragraphs(text, max_chars=350, user_break_keys=None):
     pre_processed_text = re.sub(rf'({combined_pattern})', r'<SPLIT>\1', text, flags=re.IGNORECASE)
     raw_segments = pre_processed_text.split('<SPLIT>')
     
-    # --- B. Process Each Segment for Length ---
+    # --- Process Segments ---
     final_paragraphs = []
     
     for segment in raw_segments:
@@ -65,6 +59,7 @@ def smart_break_paragraphs(text, max_chars=350, user_break_keys=None):
             final_paragraphs.append(segment)
         else:
             current_chunk = ""
+            # Split by sentence ending punctuation
             sentences = re.split(r'(?<=[.!?])\s+', segment)
             
             for sentence in sentences:
@@ -161,23 +156,29 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
     
     styles = getSampleStyleSheet()
     
-    # --- Custom Styles (Optimized Sizes) ---
+    # --- Custom Colors (Soothing Palette) ---
+    COLOR_Q_TEXT = colors.HexColor("#2C3E50")   # Dark Slate Blue (Softer than black)
+    COLOR_META = colors.HexColor("#7F8C8D")     # Grey for metadata
+    COLOR_ANS = colors.HexColor("#27AE60")      # Nephritis Green
+    COLOR_TIPS_BG = colors.HexColor("#E8F8F5")  # Very Pale Mint
+    COLOR_TABLE_HEAD = colors.HexColor("#D4E6F1") # Pale Blue
+    
+    # --- Custom Styles ---
     style_q = ParagraphStyle(
         'ElegantQuestion', 
         parent=styles['Heading3'], 
-        fontSize=12,  # Increased slightly
+        fontSize=12, 
         leading=16, 
-        textColor=colors.HexColor("#000000"), # Black for main question text
+        textColor=COLOR_Q_TEXT, 
         spaceAfter=8
     )
     
-    # Meta (ID/Source) - Made BIGGER and VISIBLE
     style_meta = ParagraphStyle(
         'MetaInfo', 
         parent=styles['Normal'], 
-        fontSize=11, # Increased from 8 to 11
-        textColor=colors.HexColor("#003366"), # Navy Blue
-        fontName='Helvetica-Bold', # Bold
+        fontSize=11, 
+        textColor=colors.HexColor("#1A5276"), # Dark Blue for ID
+        fontName='Helvetica-Bold', 
         spaceAfter=4,
         spaceBefore=10
     )
@@ -188,21 +189,23 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
         fontSize=11, 
         leading=14, 
         leftIndent=20, 
-        spaceAfter=2
+        spaceAfter=2,
+        textColor=colors.black
     )
     
     style_table_text = ParagraphStyle(
         'TableText', 
         parent=styles['Normal'], 
         fontSize=11, 
-        leading=13
+        leading=13,
+        textColor=colors.black
     )
     
     style_ans = ParagraphStyle(
         'AnswerKey', 
         parent=styles['Normal'], 
         fontSize=11, 
-        textColor=colors.darkgreen, 
+        textColor=COLOR_ANS, 
         fontName='Helvetica-Bold', 
         spaceBefore=8, 
         spaceAfter=4
@@ -211,7 +214,7 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
     style_exp = ParagraphStyle(
         'Explanation', 
         parent=styles['Normal'], 
-        fontSize=11, # Readable size
+        fontSize=11, 
         leading=15, 
         textColor=colors.black, 
         alignment=0, 
@@ -223,60 +226,80 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
         parent=styles['Normal'], 
         fontSize=11, 
         leading=15, 
-        textColor=colors.HexColor("#444444"), 
-        backColor=colors.HexColor("#FFF8DC"), 
-        borderPadding=4
+        textColor=colors.HexColor("#2C3E50"), 
+        backColor=COLOR_TIPS_BG, 
+        borderPadding=6
     )
 
     story = []
     
+    # Title
     title = Paragraph(f"<b>{booklet_title}</b>", styles['Title'])
     subtitle = Paragraph(f"Generated on Streamlit • {len(data)} Questions", styles['Normal'])
     story.append(title)
     story.append(subtitle)
     story.append(Spacer(1, 30))
     
-    match_pattern = re.compile(r"([A-Z])\.\s+(.*?)\s+-\s+(\d+)\.\s+(.*?)(?=\s[A-Z]\.| \Z|\Z)")
+    # --- Regex for "Match Pairs" Table Detection ---
+    # Captures: "I. Item - Match" OR "1. Item - Match" OR "A. Item - 1. Match"
+    # Group 1: Identifier (I, II, 1, A) | Group 2: Left Side | Group 3: Right Side
+    # Looks for ' - ' as the separator.
+    match_pattern = re.compile(r"(?:^|\s)([IVX]+|\d+|[A-Z])[\.\)]\s+(.*?)\s+-\s+(.*?)(?=\s(?:[IVX]+|\d+|[A-Z])[\.\)]|\Z)", re.DOTALL)
 
     for item in data:
         q_block = []
         
-        # 1. Meta Data (Visible Header)
+        # 1. Meta Data
         meta_text = f"Q{item['id']}"
         if item.get('source'): meta_text += f" | {item['source']}"
         q_block.append(Paragraph(meta_text, style_meta))
-        q_block.append(Spacer(1, 2)) # Small gap
+        q_block.append(Spacer(1, 2))
         
-        # 2. Question Text (Format numbered statements)
+        # 2. Question Text Analysis
         raw_q_text = item['question']
-        formatted_q_text = format_question_text(raw_q_text)
         
-        matches = match_pattern.findall(raw_q_text)
+        # Check for Table Pattern (Match Lists / Pairs)
+        table_matches = match_pattern.findall(raw_q_text)
         
-        if matches and ("Match" in raw_q_text or "List" in raw_q_text):
+        if table_matches and ("Match" in raw_q_text or "List" in raw_q_text or "pairs" in raw_q_text):
+            # Extract Intro (Text before the first match)
             match_start = re.search(match_pattern, raw_q_text).start()
             intro_text = raw_q_text[:match_start].strip()
-            intro_text = format_question_text(intro_text) # Apply formatting to intro too
+            intro_text = format_question_text(intro_text)
             
             q_block.append(Paragraph(intro_text, style_q))
             q_block.append(Spacer(1, 6))
             
-            table_data = [[Paragraph("<b>List I</b>", style_table_text), Paragraph("<b>List II</b>", style_table_text)]]
-            for m in matches:
+            # Build Table
+            table_data = [[Paragraph("<b>Item / List I</b>", style_table_text), Paragraph("<b>Match / List II</b>", style_table_text)]]
+            
+            for m in table_matches:
+                # m[0]=ID (I), m[1]=Left (Asmaka), m[2]=Right (Godavari)
+                # Clean up right side (sometimes it captures trailing newlines)
+                right_text = m[2].strip()
                 col1 = Paragraph(f"<b>{m[0]}.</b> {m[1]}", style_table_text)
-                col2 = Paragraph(f"<b>{m[2]}.</b> {m[3]}", style_table_text)
+                col2 = Paragraph(right_text, style_table_text)
                 table_data.append([col1, col2])
             
             t = Table(table_data, colWidths=[230, 230])
             t.setStyle(TableStyle([
-                ('BACKGROUND', (0,0), (-1,0), colors.whitesmoke), 
+                ('BACKGROUND', (0,0), (-1,0), COLOR_TABLE_HEAD), # Pale Blue Header
                 ('GRID', (0,0), (-1,-1), 0.5, colors.lightgrey), 
                 ('VALIGN', (0,0), (-1,-1), 'TOP'), 
                 ('PADDING', (0,0), (-1,-1), 6)
             ]))
             q_block.append(t)
+            
+            # Check if there is text AFTER the table (e.g. "Select correct option")
+            match_end = re.search(match_pattern, raw_q_text).end()
+            # If the regex didn't catch the last item fully, we might lose tail text. 
+            # Simple fix: usually the question ends with the pairs or options.
+            # We assume Options handles the selection logic usually.
+            
             q_block.append(Spacer(1, 8))
         else:
+            # Standard Question
+            formatted_q_text = format_question_text(raw_q_text)
             q_block.append(Paragraph(formatted_q_text, style_q))
         
         # 3. Options
@@ -295,33 +318,26 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
         main_exp = raw_full_exp.split("||TIPS||")[0]
         tips_text = raw_full_exp.split("||TIPS||")[1] if "||TIPS||" in raw_full_exp else ""
 
-        # A. Process Paragraphs (Apply forced breaks)
+        # A. Process Main Explanation
         exp_paragraphs = smart_break_paragraphs(main_exp, max_chars=350, user_break_keys=user_breaks)
-        
-        # B. Apply Highlighting to main paragraphs
         if do_highlight:
             exp_paragraphs = [smart_highlight(p, user_highlights) for p in exp_paragraphs]
 
-        # C. Build Box
+        # C. Build Explanation Box
         exp_box_content = [[Paragraph("<b>Explanation:</b>", style_opt)]]
         for p_text in exp_paragraphs:
             exp_box_content.append([Paragraph(p_text, style_exp)])
         
-        # D. Process TIPS (Apply same logic: Break + Highlight)
+        # D. Process Tips
         if tips_text:
             exp_box_content.append([Spacer(1, 6)])
             
-            # 1. Break Tips into Paragraphs
+            # Smart Process Tips too
             tips_paragraphs = smart_break_paragraphs(tips_text, max_chars=350, user_break_keys=user_breaks)
-            
-            # 2. Highlight Tips
             if do_highlight:
                 tips_paragraphs = [smart_highlight(p, user_highlights) for p in tips_paragraphs]
             
-            # 3. Add Header
             exp_box_content.append([Paragraph("<b>Important Tips:</b>", style_tips)])
-            
-            # 4. Add Tip Paragraphs
             for t_text in tips_paragraphs:
                 exp_box_content.append([Paragraph(t_text, style_tips)])
 
