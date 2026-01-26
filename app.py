@@ -14,9 +14,7 @@ from io import BytesIO
 # --- CORE LOGIC CLASS ---
 class PDFQuizReformatter:
     def __init__(self, input_file):
-        # Store file in memory to reuse across different tools
         self.file_bytes = input_file.getvalue()
-        
         self.questions = {}     
         self.answers = {}       
         self.explanations = {}  
@@ -27,7 +25,7 @@ class PDFQuizReformatter:
         tables = []
         used_method = "None"
         
-        # --- METHOD 1: PDFPLUMBER (Best for Tables) ---
+        # --- METHOD 1: PDFPLUMBER (Fastest) ---
         try:
             with pdfplumber.open(io.BytesIO(self.file_bytes)) as pdf:
                 for page in pdf.pages:
@@ -40,7 +38,7 @@ class PDFQuizReformatter:
 
         combined_text = "\n".join(full_text)
 
-        # --- METHOD 2: PYPDF (Backup for weird text encoding) ---
+        # --- METHOD 2: PYPDF (Backup) ---
         if not combined_text.strip():
             full_text = []
             try:
@@ -52,42 +50,51 @@ class PDFQuizReformatter:
                 if combined_text.strip(): used_method = "PyPDF"
             except: pass
 
-        # --- METHOD 3: OCR (The "Nuclear Option" for Images/Scans) ---
+        # --- METHOD 3: ITERATIVE OCR (The "Unlimited" Fix) ---
         if not combined_text.strip():
-            # Warning: OCR is heavy. We limit check to 20MB to prevent server crash.
-            if len(self.file_bytes) > 20 * 1024 * 1024:
-                return "OCR_TOO_LARGE"
-                
-            st.warning("⚠️ Text is invisible to code. Activating OCR (Robot Eyes)... This will take time!")
+            st.warning("⚠️ Text is invisible. Activating Smart OCR (Page-by-Page)...")
+            
             try:
-                # Convert PDF pages to Images
-                images = convert_from_bytes(self.file_bytes)
-                full_text = []
+                # 1. Get total page count first
+                reader_check = pypdf.PdfReader(io.BytesIO(self.file_bytes))
+                total_pages = len(reader_check.pages)
                 
-                # Progress Bar
+                full_text = []
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 
-                for i, img in enumerate(images):
-                    status_text.text(f"Reading page {i+1}/{len(images)}...")
-                    # Extract text from image
-                    text = pytesseract.image_to_string(img)
-                    full_text.append(text)
-                    progress_bar.progress((i + 1) / len(images))
+                # 2. Process ONE page at a time to save RAM
+                for i in range(total_pages):
+                    status_text.text(f"Scanning page {i+1} of {total_pages}...")
+                    
+                    # Convert only the specific page
+                    # fmt='jpeg' reduces memory usage compared to default ppm
+                    images = convert_from_bytes(
+                        self.file_bytes, 
+                        first_page=i+1, 
+                        last_page=i+1,
+                        fmt='jpeg' 
+                    )
+                    
+                    if images:
+                        page_text = pytesseract.image_to_string(images[0])
+                        full_text.append(page_text)
+                    
+                    # Update progress
+                    progress_bar.progress((i + 1) / total_pages)
                 
                 combined_text = "\n".join(full_text)
-                used_method = "OCR (Tesseract)"
+                used_method = "OCR (Iterative)"
+                
             except Exception as e:
                 return f"OCR_FAILED: {e}"
 
-        # Save for debug
+        # Debug & Check
         self.debug_text = f"Method Used: {used_method}\n\n" + combined_text[:1000] 
-        
         if not combined_text.strip():
             return "EMPTY_TEXT_ERROR"
 
         # --- SMART PATTERN DETECTION ---
-        # We look for 1., 1), Q.1, or just "1 "
         patterns = [
             re.compile(r'^\s*(\d+)\.\s+(.*)', re.DOTALL | re.MULTILINE),
             re.compile(r'^\s*(\d+)\)\s+(.*)', re.DOTALL | re.MULTILINE),
@@ -232,9 +239,6 @@ if uploaded_file is not None:
                     st.success(f"Success! Found {len(processor.questions)} questions.")
                     pdf_bytes = processor.generate_pdf_bytes()
                     st.download_button(label="📥 Download Result", data=pdf_bytes, file_name="reformatted_quiz.pdf", mime="application/pdf")
-                    
-                elif status == "OCR_TOO_LARGE":
-                    st.error("⚠️ File too large for OCR. Try a file under 20MB.")
                     
                 elif "OCR_FAILED" in status:
                     st.error(f"⚠️ OCR Failed: {status}")
