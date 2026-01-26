@@ -2,7 +2,9 @@ import streamlit as st
 import pdfplumber
 import pypdf
 import re
-import io  # <--- Added this
+import io
+import pytesseract
+from pdf2image import convert_from_bytes
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
@@ -12,8 +14,7 @@ from io import BytesIO
 # --- CORE LOGIC CLASS ---
 class PDFQuizReformatter:
     def __init__(self, input_file):
-        # We read the bytes ONCE and store them.
-        # This prevents "file closed" errors when switching libraries.
+        # Store file in memory to reuse across different tools
         self.file_bytes = input_file.getvalue()
         
         self.questions = {}     
@@ -24,52 +25,73 @@ class PDFQuizReformatter:
     def process(self):
         full_text = []
         tables = []
+        used_method = "None"
         
-        # --- ATTEMPT 1: PDFPLUMBER (Best for Tables) ---
+        # --- METHOD 1: PDFPLUMBER (Best for Tables) ---
         try:
-            # Create a fresh stream for pdfplumber
             with pdfplumber.open(io.BytesIO(self.file_bytes)) as pdf:
                 for page in pdf.pages:
                     text = page.extract_text()
                     if text: full_text.append(text)
-                    
                     page_tables = page.extract_tables()
                     if page_tables: tables.extend(page_tables)
-        except Exception as e:
-            print(f"Primary reader error: {e}")
+            if full_text: used_method = "PDFPlumber"
+        except: pass
 
         combined_text = "\n".join(full_text)
 
-        # --- ATTEMPT 2: PYPDF (Backup for weird fonts) ---
-        # If pdfplumber failed to get text, we try pypdf with a FRESH stream
+        # --- METHOD 2: PYPDF (Backup for weird text encoding) ---
         if not combined_text.strip():
-            st.warning("⚠️ Primary reader found no text. Switching to Backup Engine (pypdf)...")
             full_text = []
             try:
-                # Create a NEW fresh stream for pypdf
-                backup_stream = io.BytesIO(self.file_bytes)
-                reader = pypdf.PdfReader(backup_stream)
+                reader = pypdf.PdfReader(io.BytesIO(self.file_bytes))
                 for page in reader.pages:
                     text = page.extract_text()
                     if text: full_text.append(text)
                 combined_text = "\n".join(full_text)
-            except Exception as e:
-                return f"BACKUP_FAILED: {e}"
+                if combined_text.strip(): used_method = "PyPDF"
+            except: pass
 
-        self.debug_text = combined_text[:1000] 
+        # --- METHOD 3: OCR (The "Nuclear Option" for Images/Scans) ---
+        if not combined_text.strip():
+            # Warning: OCR is heavy. We limit check to 20MB to prevent server crash.
+            if len(self.file_bytes) > 20 * 1024 * 1024:
+                return "OCR_TOO_LARGE"
+                
+            st.warning("⚠️ Text is invisible to code. Activating OCR (Robot Eyes)... This will take time!")
+            try:
+                # Convert PDF pages to Images
+                images = convert_from_bytes(self.file_bytes)
+                full_text = []
+                
+                # Progress Bar
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                for i, img in enumerate(images):
+                    status_text.text(f"Reading page {i+1}/{len(images)}...")
+                    # Extract text from image
+                    text = pytesseract.image_to_string(img)
+                    full_text.append(text)
+                    progress_bar.progress((i + 1) / len(images))
+                
+                combined_text = "\n".join(full_text)
+                used_method = "OCR (Tesseract)"
+            except Exception as e:
+                return f"OCR_FAILED: {e}"
+
+        # Save for debug
+        self.debug_text = f"Method Used: {used_method}\n\n" + combined_text[:1000] 
         
         if not combined_text.strip():
             return "EMPTY_TEXT_ERROR"
 
         # --- SMART PATTERN DETECTION ---
+        # We look for 1., 1), Q.1, or just "1 "
         patterns = [
-            # Pattern A: "1. Question..." (Most common)
             re.compile(r'^\s*(\d+)\.\s+(.*)', re.DOTALL | re.MULTILINE),
-            # Pattern B: "1) Question..."
             re.compile(r'^\s*(\d+)\)\s+(.*)', re.DOTALL | re.MULTILINE),
-            # Pattern C: "Q.1 Question..."
             re.compile(r'^\s*Q\.?\s*(\d+)[\.:]?\s+(.*)', re.DOTALL | re.MULTILINE),
-             # Pattern D: Simple Number start "1 " (Risky but catches loose formats)
             re.compile(r'^\s*(\d+)\s+(.*)', re.DOTALL | re.MULTILINE),
         ]
         
@@ -77,7 +99,6 @@ class PDFQuizReformatter:
         best_pattern = None
         
         for p in patterns:
-            # Use p.findall directly without flags
             count = len(p.findall(combined_text))
             if count > best_count:
                 best_count = count
@@ -95,9 +116,7 @@ class PDFQuizReformatter:
         buffer_text = []
         mode = "SCANNING"
         
-        # Regex to find solutions like "Solution: (a)" or "Ans. (b)"
         sol_pattern = re.compile(r'^\s*(?:Solution|Ans|Exp|Correct Option).*?[:\s-]\s*\(?([a-d])\)?', re.IGNORECASE)
-        # Regex for numbered solutions "8. Solution: (c)"
         numbered_sol_pattern = re.compile(r'^\s*(\d+)\.\s*(?:Solution|Ans|Exp).*?[:\s-]\s*\(?([a-d])\)?', re.IGNORECASE)
 
         for line in lines:
@@ -108,11 +127,9 @@ class PDFQuizReformatter:
             sol_match = sol_pattern.match(line)
             num_sol_match = numbered_sol_pattern.match(line)
 
-            # Detect Answer Key Sections
             if "ANSWER SHEET" in line.upper() or "ANSWER KEY" in line.upper() or "EXPLANATORY NOTES" in line.upper():
                 mode = "ANSWERS_SECTION"
 
-            # Case 1: Numbered Solution (e.g. "55. Solution: (a)")
             if num_sol_match:
                 q_id = int(num_sol_match.group(1))
                 self.answers[q_id] = num_sol_match.group(2).upper()
@@ -120,13 +137,11 @@ class PDFQuizReformatter:
                 current_q_id = q_id
                 mode = "IN_EXPLANATION"
 
-            # Case 2: Inline Solution (e.g. "Ans: (a)")
             elif sol_match and current_q_id:
                 self.answers[current_q_id] = sol_match.group(1).upper()
                 self.explanations[current_q_id] = line
                 mode = "IN_EXPLANATION"
 
-            # Case 3: New Question
             elif q_match and mode != "IN_EXPLANATION":
                 if current_q_id and mode == "IN_QUESTION":
                     self.questions[current_q_id] = " ".join(buffer_text)
@@ -134,12 +149,10 @@ class PDFQuizReformatter:
                 buffer_text = [q_match.group(2)]
                 mode = "IN_QUESTION"
                 
-            # Case 4: Continued Question
             elif mode == "IN_QUESTION":
                 if "Page" in line or "ForumIAS" in line or "www." in line: continue
                 buffer_text.append(line)
                 
-            # Case 5: Continued Explanation
             elif mode == "IN_EXPLANATION":
                 if q_match: 
                     if current_q_id and mode == "IN_QUESTION":
@@ -153,7 +166,6 @@ class PDFQuizReformatter:
         if current_q_id and mode == "IN_QUESTION":
             self.questions[current_q_id] = " ".join(buffer_text)
 
-        # Parse Grid Tables
         for table in tables:
             for row in table:
                 flat_row = [str(x).strip() if x else "" for x in row]
@@ -177,7 +189,7 @@ class PDFQuizReformatter:
         sorted_ids = sorted(self.questions.keys())
         
         if not sorted_ids:
-            story.append(Paragraph("<b>No questions found.</b> Check Debug View.", styles['Normal']))
+            story.append(Paragraph(f"<b>No questions found.</b><br/>Debug Info:<br/>{self.debug_text}", styles['Normal']))
             
         for q_id in sorted_ids:
             q_text = f"<b>Q{q_id}.</b> {self.questions[q_id]}"
@@ -213,7 +225,6 @@ if uploaded_file is not None:
     if st.button("Process PDF"):
         with st.spinner("Processing..."):
             try:
-                # Pass the file directly
                 processor = PDFQuizReformatter(uploaded_file)
                 status = processor.process()
                 
@@ -222,8 +233,11 @@ if uploaded_file is not None:
                     pdf_bytes = processor.generate_pdf_bytes()
                     st.download_button(label="📥 Download Result", data=pdf_bytes, file_name="reformatted_quiz.pdf", mime="application/pdf")
                     
-                elif status == "EMPTY_TEXT_ERROR":
-                    st.error("⚠️ Error: No text found (Scanned?).")
+                elif status == "OCR_TOO_LARGE":
+                    st.error("⚠️ File too large for OCR. Try a file under 20MB.")
+                    
+                elif "OCR_FAILED" in status:
+                    st.error(f"⚠️ OCR Failed: {status}")
                     
                 elif status == "NO_QUESTIONS_MATCHED":
                     st.error("⚠️ Error: 0 Questions found.")
