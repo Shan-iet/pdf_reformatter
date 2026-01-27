@@ -19,14 +19,11 @@ def format_question_text(text):
     """
     if not text: return ""
     
-    # 1. Numbered Statements: Space + Digit + Dot + Space + Capital Letter
-    # Example: " 1. It was secular" -> "<br/>1. It was secular"
+    # 1. Numbered Statements
     pattern_num = r'(\s)(\d+\.\s+[A-Z])'
     text = re.sub(pattern_num, r'<br/>\2', text)
     
     # 2. Assertion / Reason Logic
-    # Finds "Assertion" or "Reason" and adds a Line Break + Bold
-    # This ensures "Assertion (A):" and "Reason (R):" start on new lines
     pattern_ar = r'(Assertion|Reason)'
     text = re.sub(pattern_ar, r'<br/><b>\1</b>', text)
     
@@ -36,41 +33,32 @@ def clean_table_row(right_text):
     """
     Detects if the 'Outro' question text (e.g. 'How many pairs...') 
     got merged into the last table cell.
-    Returns: (cleaned_cell_text, extracted_outro_text)
     """
-    # Common phrases that start the follow-up question
     split_markers = [
         "How many", "Select the", "Which of", "Consider the", 
         "In the context", "Select correct"
     ]
     
     for marker in split_markers:
-        # Check if marker exists
         if marker in right_text:
             parts = right_text.split(marker, 1)
             return parts[0].strip(), marker + parts[1]
             
-    # Check for explicit newline followed by Capital letter (Heuristic)
     if '\n' in right_text:
         parts = right_text.rsplit('\n', 1)
-        # If the part after newline is substantial and starts with Cap
         if len(parts[1]) > 5 and parts[1][0].isupper():
              return parts[0].strip(), parts[1].strip()
 
     return right_text, ""
 
 def smart_break_paragraphs(text, max_chars=350, user_break_keys=None):
-    """
-    Breaks text into paragraphs based on forced breaks and length.
-    """
     if not text: return []
     
-    # --- Forced Break Patterns ---
     default_breaks = [
         r'Pair [IVX\d]+ is (?:in)?correct:?',      
         r'Statement [IVX\d]+ is (?:in)?correct:?', 
         r'Option [a-d] is (?:in)?correct:?',
-        r'Assertion', # Also break explanations on Assertion/Reason if referenced
+        r'Assertion', 
         r'Reason'
     ]
     
@@ -80,14 +68,10 @@ def smart_break_paragraphs(text, max_chars=350, user_break_keys=None):
                 default_breaks.append(re.escape(key.strip()))
 
     combined_pattern = "|".join(f"({p})" for p in default_breaks)
-    
-    # Insert split marker
     pre_processed_text = re.sub(rf'({combined_pattern})', r'<SPLIT>\1', text, flags=re.IGNORECASE)
     raw_segments = pre_processed_text.split('<SPLIT>')
     
-    # --- Process Segments for Length ---
     final_paragraphs = []
-    
     for segment in raw_segments:
         segment = segment.strip()
         if not segment: continue
@@ -96,9 +80,7 @@ def smart_break_paragraphs(text, max_chars=350, user_break_keys=None):
             final_paragraphs.append(segment)
         else:
             current_chunk = ""
-            # Split by sentence ending punctuation
             sentences = re.split(r'(?<=[.!?])\s+', segment)
-            
             for sentence in sentences:
                 current_chunk += sentence + " "
                 if len(current_chunk) > max_chars:
@@ -110,9 +92,6 @@ def smart_break_paragraphs(text, max_chars=350, user_break_keys=None):
     return final_paragraphs
 
 def smart_highlight(text, user_highlight_keys=None):
-    """
-    Bolds specific keywords/phrases using Regex.
-    """
     if not text: return ""
     
     patterns = [
@@ -120,9 +99,8 @@ def smart_highlight(text, user_highlight_keys=None):
         r'(Statement \d+ is [a-z ]*correct:?)',
         r'(Pair [IVX\d]+ is [a-z ]*correct:?)',
         r'(Pair [IVX\d]+ is [a-z ]*incorrect:?)',
-        r'(\b\d{4}\b)',  # Years
+        r'(\b\d{4}\b)',
     ]
-    
     keywords = ["Article \d+", "Section \d+", "Schedule \d+", "Amendment", "Act \d{4}"]
     patterns.extend(keywords)
     
@@ -194,11 +172,11 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
     styles = getSampleStyleSheet()
     
     # --- Custom Colors ---
-    COLOR_Q_TEXT = colors.HexColor("#2C3E50")   # Dark Slate Blue
-    COLOR_META = colors.HexColor("#7F8C8D")     # Grey
-    COLOR_ANS = colors.HexColor("#27AE60")      # Nephritis Green
-    COLOR_TIPS_BG = colors.HexColor("#E8F8F5")  # Soft Mint
-    COLOR_TABLE_HEAD = colors.HexColor("#D4E6F1") # Pale Blue
+    COLOR_Q_TEXT = colors.HexColor("#2C3E50")
+    COLOR_META = colors.HexColor("#7F8C8D")
+    COLOR_ANS = colors.HexColor("#27AE60")
+    COLOR_TIPS_BG = colors.HexColor("#E8F8F5")
+    COLOR_TABLE_HEAD = colors.HexColor("#D4E6F1")
     
     # --- Styles ---
     style_q = ParagraphStyle('ElegantQuestion', parent=styles['Heading3'], fontSize=12, leading=15, textColor=COLOR_Q_TEXT, spaceAfter=6)
@@ -217,25 +195,21 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
     story.append(subtitle)
     story.append(Spacer(1, 20))
     
-    # Regex for Table Detection
     match_pattern = re.compile(r"(?:^|\s)([IVX]+|\d+|[A-Z])[\.\)]\s+(.*?)\s+-\s+(.*?)(?=\s(?:[IVX]+|\d+|[A-Z])[\.\)]|\Z)", re.DOTALL)
 
     for item in data:
         q_block = []
         
-        # 1. Meta (Header)
+        # 1. Meta
         meta_text = f"Q{item['id']}"
         if item.get('source'): meta_text += f" | {item['source']}"
         q_block.append(Paragraph(meta_text, style_meta))
         
         # 2. Question Logic
         raw_q_text = item['question']
-        
-        # Check for Table Pattern
         table_matches = match_pattern.findall(raw_q_text)
         
         if table_matches and ("Match" in raw_q_text or "List" in raw_q_text or "pairs" in raw_q_text):
-            # A. Intro Text (Before table)
             match_start = re.search(match_pattern, raw_q_text).start()
             intro_text = raw_q_text[:match_start].strip()
             if intro_text:
@@ -243,9 +217,7 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
                 q_block.append(Paragraph(intro_text, style_q))
                 q_block.append(Spacer(1, 4))
             
-            # B. Build Table
             table_data = [[Paragraph("<b>Item / List I</b>", style_table_text), Paragraph("<b>Match / List II</b>", style_table_text)]]
-            
             outro_text_buffer = "" 
             
             for i, m in enumerate(table_matches):
@@ -260,7 +232,6 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
                 left_col = f"<b>{m[0]}.</b> {m[1]}"
                 table_data.append([Paragraph(left_col, style_table_text), Paragraph(right_col, style_table_text)])
             
-            # Optimized Widths
             t = Table(table_data, colWidths=[250, 270])
             t.setStyle(TableStyle([
                 ('BACKGROUND', (0,0), (-1,0), COLOR_TABLE_HEAD),
@@ -270,15 +241,12 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
             ]))
             q_block.append(t)
             
-            # C. Outro Text
             if outro_text_buffer:
                 q_block.append(Spacer(1, 6))
                 q_block.append(Paragraph(f"<b>{outro_text_buffer}</b>", style_q))
-            
             q_block.append(Spacer(1, 6))
         
         else:
-            # Standard Question
             formatted_q_text = format_question_text(raw_q_text)
             q_block.append(Paragraph(formatted_q_text, style_q))
         
@@ -289,7 +257,7 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
                 opt_text = f"<b>({key})</b> {options[key]}"
                 q_block.append(Paragraph(opt_text, style_opt))
         
-        # 4. Answer Key
+        # 4. Answer
         ans_text = f"Correct Answer: {item['answer_key']}"
         q_block.append(Paragraph(ans_text, style_ans))
         
@@ -308,12 +276,9 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
         
         if tips_text:
             exp_box_content.append([Spacer(1, 4)])
-            
-            # Smart Process Tips
             tips_paragraphs = smart_break_paragraphs(tips_text, max_chars=350, user_break_keys=user_breaks)
             if do_highlight:
                 tips_paragraphs = [smart_highlight(p, user_highlights) for p in tips_paragraphs]
-            
             exp_box_content.append([Paragraph("<b>Important Tips:</b>", style_tips)])
             for t_text in tips_paragraphs:
                 exp_box_content.append([Paragraph(t_text, style_tips)])
@@ -329,7 +294,7 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
         q_block.append(Spacer(1, 4))
         q_block.append(t_exp)
         q_block.append(Spacer(1, 10))
-        q_block.append(Paragraph("_" * 90, style_meta)) 
+        q_block.append(Paragraph("_" * 90, style_meta))
         q_block.append(Spacer(1, 10))
         
         story.append(KeepTogether(q_block))
@@ -351,7 +316,6 @@ with st.sidebar:
     
     st.markdown("---")
     st.subheader("🛠️ Custom Formatting")
-    
     break_input = st.text_input("Force Paragraph Break at:", placeholder="e.g. Note:, However, Conclusion:")
     highlight_input = st.text_input("Highlight Keywords:", placeholder="e.g. Supreme Court, Act 1935")
 
@@ -364,6 +328,12 @@ col1, col2 = st.columns(2)
 with col1: q_file = st.file_uploader("Upload Questions JSON", type="json")
 with col2: a_file = st.file_uploader("Upload Answers JSON", type="json")
 
+# --- UI LOGIC WITH SESSION STATE ---
+if 'processed_data' not in st.session_state:
+    st.session_state.processed_data = None
+    st.session_state.pdf_bytes = None
+    st.session_state.json_bytes = None
+
 if q_file and a_file:
     if st.button("Generate Booklet"):
         merged_data = merge_json_data(q_file, a_file)
@@ -375,18 +345,35 @@ if q_file and a_file:
                 # 2. Generate JSON
                 json_bytes = json.dumps(merged_data, indent=2, ensure_ascii=False)
                 
-                # 3. Dynamic Filenames
-                safe_title = re.sub(r'[^\w\s-]', '', booklet_title).strip().replace(' ', '_')
-                if not safe_title: safe_title = "quiz_data"
+                # 3. Store in Session State
+                st.session_state.processed_data = merged_data
+                st.session_state.pdf_bytes = pdf_bytes
+                st.session_state.json_bytes = json_bytes
                 
-                pdf_filename = f"{safe_title}.pdf"
-                json_filename = f"{safe_title}.json"
-
                 st.success(f"Success! Processed {len(merged_data)} questions.")
-                
-                # 4. Download Buttons
-                b1, b2 = st.columns(2)
-                with b1:
-                    st.download_button("📥 Download PDF", pdf_bytes, pdf_filename, "application/pdf")
-                with b2:
-                    st.download_button("📥 Download Mapped JSON", json_bytes, json_filename, "application/json")
+
+# --- DISPLAY DOWNLOAD BUTTONS (PERSISTENT) ---
+if st.session_state.processed_data:
+    # Generate Dynamic Filename
+    safe_title = re.sub(r'[^\w\s-]', '', booklet_title).strip().replace(' ', '_')
+    if not safe_title: safe_title = "quiz_data"
+    
+    pdf_filename = f"{safe_title}.pdf"
+    json_filename = f"{safe_title}.json"
+
+    st.markdown("### 📥 Download Your Files")
+    b1, b2 = st.columns(2)
+    with b1:
+        st.download_button(
+            label="📄 Download PDF", 
+            data=st.session_state.pdf_bytes, 
+            file_name=pdf_filename, 
+            mime="application/pdf"
+        )
+    with b2:
+        st.download_button(
+            label="💾 Download Mapped JSON", 
+            data=st.session_state.json_bytes, 
+            file_name=json_filename, 
+            mime="application/json"
+        )
