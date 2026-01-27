@@ -24,7 +24,6 @@ def format_question_text(text):
     text = re.sub(pattern_num, r'<br/>\2', text)
     
     # 2. Assertion / Reason Logic
-    # Finds "Assertion" or "Reason" and adds a Line Break + Bold
     pattern_ar = r'(Assertion|Reason)'
     text = re.sub(pattern_ar, r'<br/><b>\1</b>', text)
     
@@ -34,7 +33,6 @@ def clean_table_row(right_text):
     """
     Detects if the 'Outro' question text (e.g. 'How many pairs...') 
     got merged into the last table cell.
-    Returns: (cleaned_cell_text, extracted_outro_text)
     """
     split_markers = [
         "How many", "Select the", "Which of", "Consider the", 
@@ -46,7 +44,6 @@ def clean_table_row(right_text):
             parts = right_text.split(marker, 1)
             return parts[0].strip(), marker + parts[1]
             
-    # Check for explicit newline followed by Capital letter (Heuristic)
     if '\n' in right_text:
         parts = right_text.rsplit('\n', 1)
         if len(parts[1]) > 5 and parts[1][0].isupper():
@@ -56,19 +53,46 @@ def clean_table_row(right_text):
 
 def smart_break_paragraphs(text, max_chars=350, user_break_keys=None):
     """
-    Breaks text into paragraphs based on forced breaks and length.
+    Breaks text into paragraphs based on:
+    1. Forced Breaks (Assertion, Reason, User Keys)
+    2. Intelligent List Detection (Bullets, (a), (i), I. II.)
+    3. Character Length
     """
     if not text: return []
     
-    # --- Forced Break Patterns ---
+    # --- A. Pre-Process: Intelligent List Detection ---
+    # We replace list markers with <SPLIT>Marker to force breaks later.
+    
+    # 1. Strict Markers (Always split)
+    # Bullets, Parenthesized (a)/(i), Lowercase Roman i. ii.
+    # Excludes e.g., i.e. via negative lookbehind logic or strict formatting
+    strict_patterns = [
+        r'[•\-\*➢]\s+',                 # Bullets
+        r'\((?:[a-zA-Z]|[ivxIVX]+|\d+)\)', # (a), (i), (1)
+        r'\b[ivx]+\.\s+'                 # i. ii. iii. (Lowercase roman is safe)
+    ]
+    
+    # 2. Conditional Uppercase Markers (I. II. A. B.)
+    # SAFETY CHECK: Only split if preceded by Start of Line OR Punctuation (. ! ?)
+    # This protects "Pulkesin II." (Preceded by 'n') vs "end. II." (Preceded by '.')
+    conditional_pattern = r'(?:^|(?<=[.!?]\s))([IVX]+|[A-Z])\.\s+'
+
+    # Apply Strict Patterns
+    for p in strict_patterns:
+        text = re.sub(f'({p})', r'<SPLIT>\1', text)
+        
+    # Apply Conditional Pattern (Manual handling to preserve the match)
+    # We find "Dot Space Marker Dot Space" and insert SPLIT
+    text = re.sub(conditional_pattern, r'<SPLIT>\1. ', text)
+
+    # --- B. Forced Break Patterns (Keywords) ---
     default_breaks = [
         r'Pair [IVX\d]+ is (?:in)?correct:?',      
         r'Statement [IVX\d]+ is (?:in)?correct:?', 
         r'Option [a-d] is (?:in)?correct:?',
         r'Assertion', 
         r'Reason',
-        # NEW: Catch "Word:" (e.g. Pardon:, Veto:) and force new line
-        r'\b[A-Z][a-zA-Z]+:' 
+        r'\b[A-Z][a-zA-Z]+:' # Definition Headers (Pardon:, Note:)
     ]
     
     if user_break_keys:
@@ -79,16 +103,17 @@ def smart_break_paragraphs(text, max_chars=350, user_break_keys=None):
     combined_pattern = "|".join(f"({p})" for p in default_breaks)
     
     # Insert split marker <SPLIT> before the match
-    pre_processed_text = re.sub(rf'({combined_pattern})', r'<SPLIT>\1', text, flags=re.IGNORECASE)
-    raw_segments = pre_processed_text.split('<SPLIT>')
+    text = re.sub(rf'({combined_pattern})', r'<SPLIT>\1', text, flags=re.IGNORECASE)
     
-    # --- Process Segments for Length ---
+    # --- C. Process Segments ---
+    raw_segments = text.split('<SPLIT>')
     final_paragraphs = []
     
     for segment in raw_segments:
         segment = segment.strip()
         if not segment: continue
         
+        # If segment is huge, split by sentence length
         if len(segment) < max_chars:
             final_paragraphs.append(segment)
         else:
