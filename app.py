@@ -19,11 +19,14 @@ def format_question_text(text):
     """
     if not text: return ""
     
-    # 1. Numbered Statements
+    # 1. Numbered Statements (Space + Digit + Dot + Space + Capital Letter)
+    # Example: " 1. It was secular" -> "<br/>1. It was secular"
     pattern_num = r'(\s)(\d+\.\s+[A-Z])'
     text = re.sub(pattern_num, r'<br/>\2', text)
     
     # 2. Assertion / Reason Logic
+    # Finds "Assertion" or "Reason" (case sensitive usually fits exam format)
+    # Adds a Line Break + Bold
     pattern_ar = r'(Assertion|Reason)'
     text = re.sub(pattern_ar, r'<br/><b>\1</b>', text)
     
@@ -44,6 +47,7 @@ def clean_table_row(right_text):
             parts = right_text.split(marker, 1)
             return parts[0].strip(), marker + parts[1]
             
+    # Check for explicit newline followed by Capital letter (Heuristic)
     if '\n' in right_text:
         parts = right_text.rsplit('\n', 1)
         if len(parts[1]) > 5 and parts[1][0].isupper():
@@ -52,8 +56,12 @@ def clean_table_row(right_text):
     return right_text, ""
 
 def smart_break_paragraphs(text, max_chars=350, user_break_keys=None):
+    """
+    Breaks text into paragraphs based on forced breaks and length.
+    """
     if not text: return []
     
+    # --- Forced Break Patterns ---
     default_breaks = [
         r'Pair [IVX\d]+ is (?:in)?correct:?',      
         r'Statement [IVX\d]+ is (?:in)?correct:?', 
@@ -68,10 +76,14 @@ def smart_break_paragraphs(text, max_chars=350, user_break_keys=None):
                 default_breaks.append(re.escape(key.strip()))
 
     combined_pattern = "|".join(f"({p})" for p in default_breaks)
+    
+    # Insert split marker
     pre_processed_text = re.sub(rf'({combined_pattern})', r'<SPLIT>\1', text, flags=re.IGNORECASE)
     raw_segments = pre_processed_text.split('<SPLIT>')
     
+    # --- Process Segments for Length ---
     final_paragraphs = []
+    
     for segment in raw_segments:
         segment = segment.strip()
         if not segment: continue
@@ -92,6 +104,9 @@ def smart_break_paragraphs(text, max_chars=350, user_break_keys=None):
     return final_paragraphs
 
 def smart_highlight(text, user_highlight_keys=None):
+    """
+    Bolds specific keywords/phrases using Regex.
+    """
     if not text: return ""
     
     patterns = [
@@ -99,7 +114,7 @@ def smart_highlight(text, user_highlight_keys=None):
         r'(Statement \d+ is [a-z ]*correct:?)',
         r'(Pair [IVX\d]+ is [a-z ]*correct:?)',
         r'(Pair [IVX\d]+ is [a-z ]*incorrect:?)',
-        r'(\b\d{4}\b)',
+        r'(\b\d{4}\b)', # Years
     ]
     keywords = ["Article \d+", "Section \d+", "Schedule \d+", "Amendment", "Act \d{4}"]
     patterns.extend(keywords)
@@ -195,6 +210,7 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
     story.append(subtitle)
     story.append(Spacer(1, 20))
     
+    # Regex for Table Detection
     match_pattern = re.compile(r"(?:^|\s)([IVX]+|\d+|[A-Z])[\.\)]\s+(.*?)\s+-\s+(.*?)(?=\s(?:[IVX]+|\d+|[A-Z])[\.\)]|\Z)", re.DOTALL)
 
     for item in data:
@@ -207,11 +223,15 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
         
         # 2. Question Logic
         raw_q_text = item['question']
+        
+        # Check for Table Pattern
         table_matches = match_pattern.findall(raw_q_text)
         
         if table_matches and ("Match" in raw_q_text or "List" in raw_q_text or "pairs" in raw_q_text):
             match_start = re.search(match_pattern, raw_q_text).start()
             intro_text = raw_q_text[:match_start].strip()
+            
+            # Format the intro text (Assertion/Reason check applies here too)
             if intro_text:
                 intro_text = format_question_text(intro_text)
                 q_block.append(Paragraph(intro_text, style_q))
