@@ -20,13 +20,11 @@ def format_question_text(text):
     if not text: return ""
     
     # 1. Numbered Statements (Space + Digit + Dot + Space + Capital Letter)
-    # Example: " 1. It was secular" -> "<br/>1. It was secular"
     pattern_num = r'(\s)(\d+\.\s+[A-Z])'
     text = re.sub(pattern_num, r'<br/>\2', text)
     
     # 2. Assertion / Reason Logic
-    # Finds "Assertion" or "Reason" (case sensitive usually fits exam format)
-    # Adds a Line Break + Bold
+    # Finds "Assertion" or "Reason" and adds a Line Break + Bold
     pattern_ar = r'(Assertion|Reason)'
     text = re.sub(pattern_ar, r'<br/><b>\1</b>', text)
     
@@ -36,6 +34,7 @@ def clean_table_row(right_text):
     """
     Detects if the 'Outro' question text (e.g. 'How many pairs...') 
     got merged into the last table cell.
+    Returns: (cleaned_cell_text, extracted_outro_text)
     """
     split_markers = [
         "How many", "Select the", "Which of", "Consider the", 
@@ -67,7 +66,9 @@ def smart_break_paragraphs(text, max_chars=350, user_break_keys=None):
         r'Statement [IVX\d]+ is (?:in)?correct:?', 
         r'Option [a-d] is (?:in)?correct:?',
         r'Assertion', 
-        r'Reason'
+        r'Reason',
+        # NEW: Catch "Word:" (e.g. Pardon:, Veto:) and force new line
+        r'\b[A-Z][a-zA-Z]+:' 
     ]
     
     if user_break_keys:
@@ -77,7 +78,7 @@ def smart_break_paragraphs(text, max_chars=350, user_break_keys=None):
 
     combined_pattern = "|".join(f"({p})" for p in default_breaks)
     
-    # Insert split marker
+    # Insert split marker <SPLIT> before the match
     pre_processed_text = re.sub(rf'({combined_pattern})', r'<SPLIT>\1', text, flags=re.IGNORECASE)
     raw_segments = pre_processed_text.split('<SPLIT>')
     
@@ -105,10 +106,11 @@ def smart_break_paragraphs(text, max_chars=350, user_break_keys=None):
 
 def smart_highlight(text, user_highlight_keys=None):
     """
-    Bolds specific keywords/phrases using Regex.
+    Bolds/Colors specific keywords/phrases using Regex.
     """
     if not text: return ""
     
+    # 1. Standard Bolding (Black Bold)
     patterns = [
         r'(Option [a-d] is [a-z ]*correct:?)',
         r'(Statement \d+ is [a-z ]*correct:?)',
@@ -126,6 +128,11 @@ def smart_highlight(text, user_highlight_keys=None):
 
     for p in patterns:
         text = re.sub(rf'({p})', r'<b>\1</b>', text, flags=re.IGNORECASE)
+
+    # 2. Definition Header Coloring (e.g. "Pardon:", "Note:")
+    # Looks for Capitalized Word + Colon -> Bolds and Colors it Maroon
+    def_pattern = r'(\b[A-Z][a-zA-Z]+:)'
+    text = re.sub(def_pattern, r'<b><font color="#800000">\1</font></b>', text)
 
     return text
 
@@ -187,11 +194,11 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
     styles = getSampleStyleSheet()
     
     # --- Custom Colors ---
-    COLOR_Q_TEXT = colors.HexColor("#2C3E50")
-    COLOR_META = colors.HexColor("#7F8C8D")
-    COLOR_ANS = colors.HexColor("#27AE60")
-    COLOR_TIPS_BG = colors.HexColor("#E8F8F5")
-    COLOR_TABLE_HEAD = colors.HexColor("#D4E6F1")
+    COLOR_Q_TEXT = colors.HexColor("#2C3E50")   # Dark Slate Blue
+    COLOR_META = colors.HexColor("#7F8C8D")     # Grey
+    COLOR_ANS = colors.HexColor("#27AE60")      # Nephritis Green
+    COLOR_TIPS_BG = colors.HexColor("#E8F8F5")  # Soft Mint
+    COLOR_TABLE_HEAD = colors.HexColor("#D4E6F1") # Pale Blue
     
     # --- Styles ---
     style_q = ParagraphStyle('ElegantQuestion', parent=styles['Heading3'], fontSize=12, leading=15, textColor=COLOR_Q_TEXT, spaceAfter=6)
@@ -210,7 +217,6 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
     story.append(subtitle)
     story.append(Spacer(1, 20))
     
-    # Regex for Table Detection
     match_pattern = re.compile(r"(?:^|\s)([IVX]+|\d+|[A-Z])[\.\)]\s+(.*?)\s+-\s+(.*?)(?=\s(?:[IVX]+|\d+|[A-Z])[\.\)]|\Z)", re.DOTALL)
 
     for item in data:
@@ -223,15 +229,11 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
         
         # 2. Question Logic
         raw_q_text = item['question']
-        
-        # Check for Table Pattern
         table_matches = match_pattern.findall(raw_q_text)
         
         if table_matches and ("Match" in raw_q_text or "List" in raw_q_text or "pairs" in raw_q_text):
             match_start = re.search(match_pattern, raw_q_text).start()
             intro_text = raw_q_text[:match_start].strip()
-            
-            # Format the intro text (Assertion/Reason check applies here too)
             if intro_text:
                 intro_text = format_question_text(intro_text)
                 q_block.append(Paragraph(intro_text, style_q))
