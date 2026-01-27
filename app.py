@@ -36,10 +36,9 @@ def clean_table_row(right_text):
     ]
     
     for marker in split_markers:
-        # Check if marker exists (case sensitive usually fine for these standard phrases)
+        # Check if marker exists
         if marker in right_text:
             parts = right_text.split(marker, 1)
-            # Ensure we aren't splitting in the middle of a sentence
             return parts[0].strip(), marker + parts[1]
             
     # Check for explicit newline followed by Capital letter (Heuristic)
@@ -174,7 +173,7 @@ def merge_json_data(q_file, a_file):
 # ==========================================
 def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_highlights):
     buffer = BytesIO()
-    # OPTIMIZATION: Reduced margins (36pt = 0.5 inch) to fit more content
+    # Reduced margins (36pt = 0.5 inch)
     doc = SimpleDocTemplate(
         buffer, 
         pagesize=A4, 
@@ -185,10 +184,10 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
     styles = getSampleStyleSheet()
     
     # --- Custom Colors ---
-    COLOR_Q_TEXT = colors.HexColor("#2C3E50")   # Dark Slate Blue (Softer than black)
+    COLOR_Q_TEXT = colors.HexColor("#2C3E50")   # Dark Slate Blue
     COLOR_META = colors.HexColor("#7F8C8D")     # Grey
     COLOR_ANS = colors.HexColor("#27AE60")      # Nephritis Green
-    COLOR_TIPS_BG = colors.HexColor("#E8F8F5")  # Soft Mint (Eye soothing)
+    COLOR_TIPS_BG = colors.HexColor("#E8F8F5")  # Soft Mint
     COLOR_TABLE_HEAD = colors.HexColor("#D4E6F1") # Pale Blue
     
     # --- Styles ---
@@ -209,7 +208,7 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
     story.append(subtitle)
     story.append(Spacer(1, 20))
     
-    # Regex for Table Detection (Matches I. Item - Match, or 1. Item - Match)
+    # Regex for Table Detection
     match_pattern = re.compile(r"(?:^|\s)([IVX]+|\d+|[A-Z])[\.\)]\s+(.*?)\s+-\s+(.*?)(?=\s(?:[IVX]+|\d+|[A-Z])[\.\)]|\Z)", re.DOTALL)
 
     for item in data:
@@ -255,7 +254,7 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
                 left_col = f"<b>{m[0]}.</b> {m[1]}"
                 table_data.append([Paragraph(left_col, style_table_text), Paragraph(right_col, style_table_text)])
             
-            # Optimized Widths (Total ~520pts)
+            # Optimized Widths
             t = Table(table_data, colWidths=[250, 270])
             t.setStyle(TableStyle([
                 ('BACKGROUND', (0,0), (-1,0), COLOR_TABLE_HEAD),
@@ -273,7 +272,7 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
             q_block.append(Spacer(1, 6))
         
         else:
-            # Standard Question (Apply formatting for "1. Statement")
+            # Standard Question
             formatted_q_text = format_question_text(raw_q_text)
             q_block.append(Paragraph(formatted_q_text, style_q))
         
@@ -363,7 +362,18 @@ if q_file and a_file:
     if st.button("Generate Booklet"):
         merged_data = merge_json_data(q_file, a_file)
         if merged_data:
-            with st.spinner("Designing PDF..."):
+            with st.spinner("Processing..."):
+                # 1. Generate PDF
                 pdf_bytes = create_elegant_pdf(merged_data, booklet_title, highlight_enabled, user_breaks, user_highlights)
+                
+                # 2. Generate JSON
+                json_bytes = json.dumps(merged_data, indent=2, ensure_ascii=False)
+                
                 st.success(f"Success! Processed {len(merged_data)} questions.")
-                st.download_button("📥 Download PDF", pdf_bytes, "Quiz_Booklet.pdf", "application/pdf")
+                
+                # Layout for 2 buttons
+                b1, b2 = st.columns(2)
+                with b1:
+                    st.download_button("📥 Download PDF", pdf_bytes, "Quiz_Booklet.pdf", "application/pdf")
+                with b2:
+                    st.download_button("📥 Download Mapped JSON", json_bytes, "mapped_quiz_data.json", "application/json")
