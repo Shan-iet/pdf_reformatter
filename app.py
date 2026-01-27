@@ -13,15 +13,24 @@ from io import BytesIO
 
 def format_question_text(text):
     """
-    Detects numbered statements (1. Statement...) inside questions 
-    and forces them onto new lines for better readability.
+    Detects patterns inside questions and forces new lines:
+    1. Numbered statements (e.g., "1. Statement...")
+    2. Assertion / Reason keywords
     """
     if not text: return ""
-    # Pattern: Look for space + digit + dot + space + Capital Letter
+    
+    # 1. Numbered Statements: Space + Digit + Dot + Space + Capital Letter
     # Example: " 1. It was secular" -> "<br/>1. It was secular"
-    pattern = r'(\s)(\d+\.\s+[A-Z])'
-    formatted_text = re.sub(pattern, r'<br/>\2', text)
-    return formatted_text
+    pattern_num = r'(\s)(\d+\.\s+[A-Z])'
+    text = re.sub(pattern_num, r'<br/>\2', text)
+    
+    # 2. Assertion / Reason Logic
+    # Finds "Assertion" or "Reason" and adds a Line Break + Bold
+    # This ensures "Assertion (A):" and "Reason (R):" start on new lines
+    pattern_ar = r'(Assertion|Reason)'
+    text = re.sub(pattern_ar, r'<br/><b>\1</b>', text)
+    
+    return text
 
 def clean_table_row(right_text):
     """
@@ -60,7 +69,9 @@ def smart_break_paragraphs(text, max_chars=350, user_break_keys=None):
     default_breaks = [
         r'Pair [IVX\d]+ is (?:in)?correct:?',      
         r'Statement [IVX\d]+ is (?:in)?correct:?', 
-        r'Option [a-d] is (?:in)?correct:?',       
+        r'Option [a-d] is (?:in)?correct:?',
+        r'Assertion', # Also break explanations on Assertion/Reason if referenced
+        r'Reason'
     ]
     
     if user_break_keys:
@@ -173,7 +184,6 @@ def merge_json_data(q_file, a_file):
 # ==========================================
 def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_highlights):
     buffer = BytesIO()
-    # Reduced margins (36pt = 0.5 inch)
     doc = SimpleDocTemplate(
         buffer, 
         pagesize=A4, 
@@ -201,7 +211,6 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
 
     story = []
     
-    # Title
     title = Paragraph(f"<b>{booklet_title}</b>", styles['Title'])
     subtitle = Paragraph(f"Generated on Streamlit • {len(data)} Questions", styles['Normal'])
     story.append(title)
@@ -240,10 +249,7 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
             outro_text_buffer = "" 
             
             for i, m in enumerate(table_matches):
-                # m[0]=ID, m[1]=Left, m[2]=Right
                 right_text_raw = m[2].strip()
-                
-                # If it's the last item, check if question text merged into it
                 if i == len(table_matches) - 1:
                     clean_right, extracted_outro = clean_table_row(right_text_raw)
                     right_col = clean_right
@@ -264,7 +270,7 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
             ]))
             q_block.append(t)
             
-            # C. Outro Text (The Question Part)
+            # C. Outro Text
             if outro_text_buffer:
                 q_block.append(Spacer(1, 6))
                 q_block.append(Paragraph(f"<b>{outro_text_buffer}</b>", style_q))
@@ -323,7 +329,7 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
         q_block.append(Spacer(1, 4))
         q_block.append(t_exp)
         q_block.append(Spacer(1, 10))
-        q_block.append(Paragraph("_" * 90, style_meta)) # Thin Divider
+        q_block.append(Paragraph("_" * 90, style_meta)) 
         q_block.append(Spacer(1, 10))
         
         story.append(KeepTogether(q_block))
@@ -369,11 +375,18 @@ if q_file and a_file:
                 # 2. Generate JSON
                 json_bytes = json.dumps(merged_data, indent=2, ensure_ascii=False)
                 
+                # 3. Dynamic Filenames
+                safe_title = re.sub(r'[^\w\s-]', '', booklet_title).strip().replace(' ', '_')
+                if not safe_title: safe_title = "quiz_data"
+                
+                pdf_filename = f"{safe_title}.pdf"
+                json_filename = f"{safe_title}.json"
+
                 st.success(f"Success! Processed {len(merged_data)} questions.")
                 
-                # Layout for 2 buttons
+                # 4. Download Buttons
                 b1, b2 = st.columns(2)
                 with b1:
-                    st.download_button("📥 Download PDF", pdf_bytes, "Quiz_Booklet.pdf", "application/pdf")
+                    st.download_button("📥 Download PDF", pdf_bytes, pdf_filename, "application/pdf")
                 with b2:
-                    st.download_button("📥 Download Mapped JSON", json_bytes, "mapped_quiz_data.json", "application/json")
+                    st.download_button("📥 Download Mapped JSON", json_bytes, json_filename, "application/json")
