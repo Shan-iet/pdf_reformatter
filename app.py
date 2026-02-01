@@ -164,7 +164,10 @@ def smart_highlight(text, user_highlight_keys=None):
 # ==========================================
 # 2. MERGE ENGINE
 # ==========================================
-def merge_json_data(q_file, a_file):
+def merge_json_data(q_file, a_file, section_text):
+    """
+    Merges Question and Answer files and inserts the 'section' key.
+    """
     try:
         questions = json.load(q_file)
         answers = json.load(a_file)
@@ -191,6 +194,7 @@ def merge_json_data(q_file, a_file):
 
             merged_data.append({
                 'id': q_id,
+                'section': section_text, # <--- NEW FIELD INSERTED HERE
                 'question': q.get('question', ''),
                 'options': q.get('options', {}),
                 'source': q.get('source', ''),
@@ -375,6 +379,9 @@ col1, col2 = st.columns(2)
 with col1: q_file = st.file_uploader("Upload Questions JSON", type="json")
 with col2: a_file = st.file_uploader("Upload Answers JSON", type="json")
 
+# --- NEW SECTION INPUT FIELD ---
+section_input = st.text_input("Enter Section Name (Added to JSON Key: 'section')", placeholder="e.g. Ancient History")
+
 # --- UI LOGIC WITH SESSION STATE ---
 if 'processed_data' not in st.session_state:
     st.session_state.processed_data = None
@@ -383,7 +390,8 @@ if 'processed_data' not in st.session_state:
 
 if q_file and a_file:
     if st.button("Generate Booklet"):
-        merged_data = merge_json_data(q_file, a_file)
+        # PASSED SECTION INPUT TO MERGE FUNCTION
+        merged_data = merge_json_data(q_file, a_file, section_input)
         if merged_data:
             with st.spinner("Processing..."):
                 # 1. Generate PDF
