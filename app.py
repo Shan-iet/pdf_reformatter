@@ -164,14 +164,25 @@ def smart_highlight(text, user_highlight_keys=None):
 # ==========================================
 # 2. MERGE ENGINE
 # ==========================================
-def merge_json_data(q_file, a_file, section_text):
+def merge_json_data(q_file, a_file):
     """
-    Merges Question and Answer files and inserts the 'section' key.
+    Merges Question and Answer files.
+    Robustly handles if q_file is a List OR a Dict (with 'questions' key).
     """
     try:
-        questions = json.load(q_file)
+        # 1. Robust Question Loading
+        q_raw = json.load(q_file)
+        if isinstance(q_raw, dict) and 'questions' in q_raw:
+            questions = q_raw['questions']
+        elif isinstance(q_raw, list):
+            questions = q_raw
+        else:
+            questions = []
+
+        # 2. Answer Loading
         answers = json.load(a_file)
         ans_dict = {item['id']: item for item in answers}
+        
         merged_data = []
         
         for q in questions:
@@ -194,7 +205,6 @@ def merge_json_data(q_file, a_file, section_text):
 
             merged_data.append({
                 'id': q_id,
-                'section': section_text, # <--- NEW FIELD INSERTED HERE
                 'question': q.get('question', ''),
                 'options': q.get('options', {}),
                 'source': q.get('source', ''),
@@ -379,8 +389,8 @@ col1, col2 = st.columns(2)
 with col1: q_file = st.file_uploader("Upload Questions JSON", type="json")
 with col2: a_file = st.file_uploader("Upload Answers JSON", type="json")
 
-# --- NEW SECTION INPUT FIELD ---
-section_input = st.text_input("Enter Section Name (Added to JSON Key: 'section')", placeholder="e.g. Ancient History")
+# --- SECTION INPUT (Global Attribute) ---
+section_input = st.text_input("Enter Section Name (Attribute of final JSON)", placeholder="e.g. Ancient History")
 
 # --- UI LOGIC WITH SESSION STATE ---
 if 'processed_data' not in st.session_state:
@@ -390,17 +400,22 @@ if 'processed_data' not in st.session_state:
 
 if q_file and a_file:
     if st.button("Generate Booklet"):
-        # PASSED SECTION INPUT TO MERGE FUNCTION
-        merged_data = merge_json_data(q_file, a_file, section_input)
+        # 1. Merge Data (Returns List of Questions)
+        merged_data = merge_json_data(q_file, a_file)
+        
         if merged_data:
             with st.spinner("Processing..."):
-                # 1. Generate PDF
+                # 2. Generate PDF (Passes List)
                 pdf_bytes = create_elegant_pdf(merged_data, booklet_title, highlight_enabled, user_breaks, user_highlights)
                 
-                # 2. Generate JSON
-                json_bytes = json.dumps(merged_data, indent=2, ensure_ascii=False)
+                # 3. Generate JSON (Wraps List in Dictionary with 'section' key)
+                final_json_structure = {
+                    "section": section_input,
+                    "questions": merged_data
+                }
+                json_bytes = json.dumps(final_json_structure, indent=2, ensure_ascii=False)
                 
-                # 3. Store in Session State
+                # 4. Store in Session State
                 st.session_state.processed_data = merged_data
                 st.session_state.pdf_bytes = pdf_bytes
                 st.session_state.json_bytes = json_bytes
