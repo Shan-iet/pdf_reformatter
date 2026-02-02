@@ -372,7 +372,7 @@ st.title("📘 Smart Quiz Publisher")
 
 with st.sidebar:
     st.header("⚙️ PDF Settings")
-    booklet_title = st.text_input("Booklet Title", value="Comprehensive Quiz Booklet")
+    booklet_title = st.text_input("Booklet Title", value=" ", palceholder="Leave empty to use filename")
     highlight_enabled = st.checkbox("Enable Smart Highlighting?", value=True)
     
     st.markdown("---")
@@ -405,6 +405,8 @@ if q_file and a_file:
         
         if merged_data:
             with st.spinner("Processing..."):
+                if booklet_title == '':
+                    booklet_title = q_file.name.replace('_q.json', '.json')
                 # 2. Generate PDF (Passes List)
                 pdf_bytes = create_elegant_pdf(merged_data, booklet_title, highlight_enabled, user_breaks, user_highlights)
                 
