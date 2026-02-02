@@ -167,34 +167,46 @@ def validate_file_types(q_file, a_file):
     Checks if the uploaded files contain the expected keys for their roles.
     """
     try:
-        # Load small samples
+        # 1. Reset pointers to ensure we read from the start
+        q_file.seek(0)
+        a_file.seek(0)
+        
         q_data = json.load(q_file)
         a_data = json.load(a_file)
         
-        # Reset file pointers so they can be read again by the merge engine
+        # 2. Reset pointers immediately so merge_json_data can read them later
         q_file.seek(0)
         a_file.seek(0)
 
-        # Logic for Question File (usually has 'options' or 'question')
-        q_sample = q_data['questions'][0] if isinstance(q_data, dict) and 'questions' in q_data else q_data[0]
-        is_q_valid = 'options' in q_sample or 'question' in q_sample
+        # 3. Identify Question Data (Handle Dict vs List)
+        q_list = q_data['questions'] if isinstance(q_data, dict) and 'questions' in q_data else q_data
+        
+        # 4. Identify Answer Data (Handle Dict vs List)
+        a_list = a_data['answers'] if isinstance(a_data, dict) and 'answers' in a_data else a_data
 
-        # Logic for Answer File (usually has 'solution' or 'explanation')
-        a_sample = a_data[0] if isinstance(a_data, list) else a_data.get('answers', [{}])[0]
-        is_a_valid = 'solution' in a_sample or 'explanation' in a_sample or 'answer' in a_sample
+        # 5. Validation Logic: Look at the first item in each list
+        # Questions MUST have 'options'
+        # Answers MUST have 'explanation' or 'solution'
+        is_q_valid = isinstance(q_list, list) and len(q_list) > 0 and 'options' in q_list[0]
+        is_a_valid = isinstance(a_list, list) and len(a_list) > 0 and ('explanation' in a_list[0] or 'solution' in a_list[0])
 
+        # 6. Detection Logic
         if not is_q_valid and is_a_valid:
-            return False, "It looks like you uploaded the **Answer** file in the **Question** section."
+            return False, "Swap Detected: You put the **Answers** file in the **Questions** slot."
+        
         if is_q_valid and not is_a_valid:
-            return False, "It looks like you uploaded the **Question** file in the **Answer** section."
+            return False, "Swap Detected: You put the **Questions** file in the **Answers** slot."
             
+        if not is_q_valid and not is_a_valid:
+            return False, "Unknown format: Neither file appears to be a valid question/answer set."
+
         return True, ""
-    except Exception:
-        # If structure is too different to tell, we skip the alert to avoid false positives
+    except Exception as e:
+        # Reset pointers on error to prevent crashing the rest of the app
         q_file.seek(0)
         a_file.seek(0)
-        return True, "" 
-
+        return False, f"Error validating file structure: {str(e)}"
+    
 
 # ==========================================
 # 2. MERGE ENGINE
@@ -448,6 +460,7 @@ if q_file and a_file:
         is_valid, error_msg = validate_file_types(q_file, a_file)
         if not is_valid:
             st.error(f"🚫 **File Swap Detected:** {error_msg}")
+            st.stop()
         else:
             merged_data = merge_json_data(q_file, a_file)
         
