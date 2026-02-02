@@ -181,6 +181,15 @@ def merge_json_data(q_file, a_file):
 
         # 2. Answer Loading
         answers = json.load(a_file)
+
+        # --- NEW: COUNT VALIDATION ALERT ---
+        q_count = len(questions)
+        a_count = len(answers)
+        
+        if q_count != a_count:
+            st.warning(f"⚠️ Mismatch Detected: Questions ({q_count}) vs Answers ({a_count}). Some questions may be missing explanations.")
+        # ------------------------------------
+
         ans_dict = {item['id']: item for item in answers}
         
         merged_data = []
