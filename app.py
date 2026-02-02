@@ -370,7 +370,37 @@ def create_elegant_pdf(data, booklet_title, do_highlight, user_breaks, user_high
 st.set_page_config(page_title="Smart Quiz Publisher", page_icon="📘")
 st.title("📘 Smart Quiz Publisher")
 
+# --- SIDEBAR SECTION ---
 with st.sidebar:
+    st.header("⚙️ PDF Settings")
+    # Leave empty by default
+    user_title_input = st.text_input("Booklet Title", value="", placeholder="Leave empty to use filename")
+    
+    highlight_enabled = st.checkbox("Enable Smart Highlighting?", value=True)
+    
+    st.markdown("---")
+    st.subheader("🛠️ Custom Formatting")
+    break_input = st.text_input("Force Paragraph Break at:", placeholder="e.g. Note:, However, Conclusion:")
+    highlight_input = st.text_input("Highlight Keywords:", placeholder="e.g. Supreme Court, Act 1935")
+
+    user_breaks = [x.strip() for x in break_input.split(',')] if break_input else []
+    user_highlights = [x.strip() for x in highlight_input.split(',')] if highlight_input else []
+
+# --- FILE UPLOADER SECTION ---
+st.write("Upload your JSON files. I'll handle the formatting.")
+col1, col2 = st.columns(2)
+with col1: q_file = st.file_uploader("Upload Questions JSON", type="json")
+with col2: a_file = st.file_uploader("Upload Answers JSON", type="json")
+
+# --- TITLE RESOLUTION LOGIC ---
+# This happens AFTER q_file is defined by the uploader
+if user_title_input.strip():
+    booklet_title = user_title_input.strip()
+elif q_file:
+    # requirement: anc_ch1_q.json -> anc_ch1.json
+    booklet_title = q_file.name.replace('_q.json', '.json')
+else:
+    booklet_title = "Comprehensive Quiz Booklet"
     st.header("⚙️ PDF Settings")
     #1. Initialize the input with an empty string
     user_title_input = st.text_input("Booklet Title", value="", placeholder="Leave empty to use file name")
