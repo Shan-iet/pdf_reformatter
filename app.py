@@ -161,6 +161,41 @@ def smart_highlight(text, user_highlight_keys=None):
 
     return text
 
+
+def validate_file_types(q_file, a_file):
+    """
+    Checks if the uploaded files contain the expected keys for their roles.
+    """
+    try:
+        # Load small samples
+        q_data = json.load(q_file)
+        a_data = json.load(a_file)
+        
+        # Reset file pointers so they can be read again by the merge engine
+        q_file.seek(0)
+        a_file.seek(0)
+
+        # Logic for Question File (usually has 'options' or 'question')
+        q_sample = q_data['questions'][0] if isinstance(q_data, dict) and 'questions' in q_data else q_data[0]
+        is_q_valid = 'options' in q_sample or 'question' in q_sample
+
+        # Logic for Answer File (usually has 'solution' or 'explanation')
+        a_sample = a_data[0] if isinstance(a_data, list) else a_data.get('answers', [{}])[0]
+        is_a_valid = 'solution' in a_sample or 'explanation' in a_sample or 'answer' in a_sample
+
+        if not is_q_valid and is_a_valid:
+            return False, "It looks like you uploaded the **Answer** file in the **Question** section."
+        if is_q_valid and not is_a_valid:
+            return False, "It looks like you uploaded the **Question** file in the **Answer** section."
+            
+        return True, ""
+    except Exception:
+        # If structure is too different to tell, we skip the alert to avoid false positives
+        q_file.seek(0)
+        a_file.seek(0)
+        return True, "" 
+
+
 # ==========================================
 # 2. MERGE ENGINE
 # ==========================================
@@ -410,28 +445,32 @@ if 'processed_data' not in st.session_state:
 if q_file and a_file:
     if st.button("Generate Booklet"):
         # 1. Merge Data (Returns List of Questions)
-        merged_data = merge_json_data(q_file, a_file)
+        is_valid, error_msg = validate_file_types(q_file, a_file)
+        if not is_valid:
+            st.error(f"🚫 **File Swap Detected:** {error_msg}")
+        else:
+            merged_data = merge_json_data(q_file, a_file)
         
-        if merged_data:
-            with st.spinner("Processing..."):
-                if booklet_title == '':
-                    booklet_title = q_file.name.replace('_q.json', '')
-                # 2. Generate PDF (Passes List)
-                pdf_bytes = create_elegant_pdf(merged_data, booklet_title, highlight_enabled, user_breaks, user_highlights)
+            if merged_data:
+                with st.spinner("Processing..."):
+                    if booklet_title == '':
+                        booklet_title = q_file.name.replace('_q.json', '')
+                    # 2. Generate PDF (Passes List)
+                    pdf_bytes = create_elegant_pdf(merged_data, booklet_title, highlight_enabled, user_breaks, user_highlights)
                 
-                # 3. Generate JSON (Wraps List in Dictionary with 'section' key)
-                final_json_structure = {
-                    "section": section_input,
-                    "questions": merged_data
-                }
-                json_bytes = json.dumps(final_json_structure, indent=2, ensure_ascii=False)
+                    # 3. Generate JSON (Wraps List in Dictionary with 'section' key)
+                    final_json_structure = {
+                        "section": section_input,
+                        "questions": merged_data
+                    }
+                    json_bytes = json.dumps(final_json_structure, indent=2, ensure_ascii=False)
                 
-                # 4. Store in Session State
-                st.session_state.processed_data = merged_data
-                st.session_state.pdf_bytes = pdf_bytes
-                st.session_state.json_bytes = json_bytes
+                    # 4. Store in Session State
+                    st.session_state.processed_data = merged_data
+                    st.session_state.pdf_bytes = pdf_bytes
+                    st.session_state.json_bytes = json_bytes
                 
-                st.success(f"Success! Processed {len(merged_data)} questions.")
+                    st.success(f"Success! Processed {len(merged_data)} questions.")
 
 # --- DISPLAY DOWNLOAD BUTTONS (PERSISTENT) ---
 if st.session_state.processed_data:
