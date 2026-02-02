@@ -235,6 +235,7 @@ def merge_json_data(q_file, a_file):
         
         if q_count != a_count:
             st.warning(f"⚠️ Mismatch Detected: Questions ({q_count}) vs Answers ({a_count}). Some questions may be missing explanations.")
+            st.stop()
         # ------------------------------------
 
         ans_dict = {item['id']: item for item in answers}
