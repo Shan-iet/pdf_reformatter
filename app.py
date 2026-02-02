@@ -372,7 +372,7 @@ st.title("📘 Smart Quiz Publisher")
 
 with st.sidebar:
     st.header("⚙️ PDF Settings")
-    booklet_title = st.text_input("Booklet Title", value=" ", placeholder="Leave empty to use filename")
+    booklet_title = st.text_input("Booklet Title", value="", placeholder="Leave empty to use filename")
     highlight_enabled = st.checkbox("Enable Smart Highlighting?", value=True)
     
     st.markdown("---")
