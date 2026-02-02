@@ -406,7 +406,7 @@ if q_file and a_file:
         if merged_data:
             with st.spinner("Processing..."):
                 if booklet_title == '':
-                    booklet_title = q_file.name.replace('_q.json', '.json')
+                    booklet_title = q_file.name.replace('_q.json', '')
                 # 2. Generate PDF (Passes List)
                 pdf_bytes = create_elegant_pdf(merged_data, booklet_title, highlight_enabled, user_breaks, user_highlights)
                 
