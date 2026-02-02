@@ -372,7 +372,18 @@ st.title("📘 Smart Quiz Publisher")
 
 with st.sidebar:
     st.header("⚙️ PDF Settings")
-    booklet_title = st.text_input("Booklet Title", value="Comprehensive Quiz Booklet")
+    #1. Initialize the input with an empty string
+    user_title_input = st.text_input("Booklet Title", value="", placeholder="Leave empty to use file name")
+    
+    # 2. Logic to determine the booklet_title
+    if user_title_input.strip():
+        booklet_title = user_title_input.strip()
+    elif q_file:
+        # Fetch name (e.g., 'anc_ch1_q.json'), remove '_q', and keep '.json'
+        booklet_title = q_file.name.replace('_q.json', '.json')
+    else:
+        # Fallback if no file is uploaded yet
+        booklet_title = "Comprehensive Quiz Booklet"
     highlight_enabled = st.checkbox("Enable Smart Highlighting?", value=True)
     
     st.markdown("---")
